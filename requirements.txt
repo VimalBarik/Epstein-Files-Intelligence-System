@@ -1,0 +1,13 @@
+pymupdf
+pdfplumber
+pdf2image
+pillow
+pytesseract
+sentence-transformers
+torch
+transformers
+faiss-cpu
+numpy
+requests
+streamlit
+tqdm
