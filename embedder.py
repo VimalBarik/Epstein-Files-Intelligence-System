@@ -1,6 +1,21 @@
 import numpy as np
 
 
+def _get_device():
+    """Pick the best available device: CUDA > MPS > CPU."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+DEVICE = _get_device()
+
 model = None
 
 
@@ -8,58 +23,35 @@ def get_model():
     global model
     if model is None:
         from sentence_transformers import SentenceTransformer
-
-        print("[INFO] Loading embedding model...")
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        print(f"[INFO] Loading embedding model on device: {DEVICE}")
+        model = SentenceTransformer("BAAI/bge-small-en-v1.5", device=DEVICE)
         print("[INFO] Embedding model ready")
     return model
 
 
-
-def embed_texts(texts, batch_size=32):
-    
+def embed_texts(texts, batch_size=16):
     if not texts:
         return np.array([])
-
     embeddings = get_model().encode(
         texts,
         batch_size=batch_size,
         show_progress_bar=True,
         convert_to_numpy=True,
-        normalize_embeddings=True   
+        normalize_embeddings=True,
+        device=DEVICE,
     )
-
     return embeddings
 
 
-
 def embed_query(text):
-   
-    embedding = get_model().encode(
-        [text],
+    return get_model().encode(
+        [f"query: {text}"],
         convert_to_numpy=True,
-        normalize_embeddings=True
+        normalize_embeddings=True,
+        device=DEVICE,
     )
-
-    return embedding
-
 
 
 def embed_chunks(chunks):
-    
-    texts = [c["content"] for c in chunks]
+    texts = [f"passage: {c['content']}" for c in chunks]
     return embed_texts(texts)
-
-
-
-if __name__ == "__main__":
-    sample_texts = [
-        "Jeffrey Epstein met with several individuals.",
-        "This is a financial document.",
-        "A court transcript of a witness."
-    ]
-
-    embeddings = embed_texts(sample_texts)
-
-    print("Shape:", embeddings.shape)
-    print("First vector:", embeddings[0][:10])

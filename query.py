@@ -1,196 +1,246 @@
-import json
 import os
-import pickle
-from collections import Counter
+import re
+from dotenv import load_dotenv
+load_dotenv()
+from reranker import rerank
 
-import requests
+# ---------------------------------------------------------------------------
+# API keys — set these in your .env file or Streamlit secrets
+# ---------------------------------------------------------------------------
 
-from chunker import chunk_text
-from project_paths import CHUNKS_JSON, FAISS_CHUNKS, FAISS_INDEX, FINAL_DATA_JSON
-
-
-def _load_faiss():
-    try:
-        import faiss
-        from embedder import embed_query
-    except Exception:
-        return None
-
-    if not FAISS_INDEX.exists() or not FAISS_CHUNKS.exists():
-        return None
-
-    index = faiss.read_index(os.fspath(FAISS_INDEX))
-    with open(FAISS_CHUNKS, "rb") as file_obj:
-        chunks = pickle.load(file_obj)
-
-    return index, chunks, embed_query
+GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+PINECONE_INDEX   = os.environ.get("PINECONE_INDEX",  "epstein-index")
 
 
-def load_chunks():
-    if CHUNKS_JSON.exists():
-        with open(CHUNKS_JSON, "r", encoding="utf-8") as file_obj:
-            return json.load(file_obj)
+# ---------------------------------------------------------------------------
+# Follow-up detection
+# ---------------------------------------------------------------------------
 
-    if FINAL_DATA_JSON.exists():
-        with open(FINAL_DATA_JSON, "r", encoding="utf-8") as file_obj:
-            data = json.load(file_obj)
+_FOLLOWUP_PATTERNS = re.compile(
+    r"^\s*("
+    r"show (me )?(the )?(related |relevant )?(documents?|sources?|files?|pages?|evidence|results?)"
+    r"|what (documents?|sources?|files?|pages?) (support|show|mention|relate)"
+    r"|(give|list|find|get) (me )?(the )?(documents?|sources?|files?|pages?|evidence)"
+    r"|where (is|are|can I find) (that|this|those|it)"
+    r"|which (documents?|sources?|files?|pages?)"
+    r"|more (details?|info|information|context)"
+    r"|can you (show|find|give|list|tell me more)"
+    r"|tell me more"
+    r"|elaborate"
+    r"|expand (on )?(that|this)"
+    r"|what else"
+    r"|and (what|where|who|how|why)"
+    r"|also"
+    r"|related (documents?|sources?|files?)"
+    r")",
+    re.IGNORECASE,
+)
 
-        chunks = []
-        for item in data:
-            for piece in chunk_text(item.get("content", "")):
-                if len(piece.strip()) < 30:
-                    continue
-                chunks.append({
-                    "file": item.get("file"),
-                    "page": item.get("page"),
-                    "type": item.get("type", "text"),
-                    "content": piece.strip(),
-                    "source": item.get("source"),
-                    "image_path": item.get("image_path"),
-                })
-        return chunks
-
-    return []
-
-
-def load_index():
-    loaded = _load_faiss()
-    if loaded is not None:
-        index, chunks, embed_query = loaded
-        return {
-            "mode": "faiss",
-            "index": index,
-            "chunks": chunks,
-            "embed_query": embed_query,
-        }
-
-    return {
-        "mode": "keyword",
-        "index": None,
-        "chunks": load_chunks(),
-        "embed_query": None,
-    }
+_SHORT_PROMPT_WORD_LIMIT = 8
 
 
-def _keyword_score(query, text):
-    query_terms = [term.lower() for term in query.split() if len(term) > 2]
-    if not query_terms:
-        return 0
-
-    text_lower = (text or "").lower()
-    counts = Counter(text_lower.split())
-    score = 0
-
-    for term in query_terms:
-        score += counts.get(term, 0)
-        if term in text_lower:
-            score += 2
-
-    return score
+def is_followup(current_query: str, history: list) -> bool:
+    if not history:
+        return False
+    if _FOLLOWUP_PATTERNS.search(current_query):
+        return True
+    if len(current_query.split()) <= _SHORT_PROMPT_WORD_LIMIT:
+        return True
+    return False
 
 
-def search(query, k=5):
-    store = load_index()
-    chunks = store["chunks"]
+def build_enriched_query(current_query: str, history: list) -> str:
+    if not history or len(history) < 2:
+        return current_query
 
-    if not chunks:
-        return []
+    last_user      = ""
+    last_assistant = ""
+    for msg in reversed(history):
+        if msg["role"] == "assistant" and not last_assistant:
+            last_assistant = msg["content"]
+        elif msg["role"] == "user" and not last_user and last_assistant:
+            last_user = msg["content"]
+            break
 
-    if store["mode"] == "faiss":
-        query_vec = store["embed_query"](query)
-        _, indices = store["index"].search(query_vec, k)
-        return [chunks[idx] for idx in indices[0] if 0 <= idx < len(chunks)]
+    topic_terms = " ".join(w for w in last_user.split() if len(w) > 3)
+    return f"{topic_terms} {current_query}".strip()
 
-    scored = []
-    for chunk in chunks:
-        score = _keyword_score(query, chunk.get("content", ""))
-        if score > 0:
-            scored.append((score, chunk))
 
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [chunk for _, chunk in scored[:k]]
+# ---------------------------------------------------------------------------
+# Pinecone search
+# ---------------------------------------------------------------------------
+
+_pinecone_index = None
+
+
+def get_pinecone_index():
+    global _pinecone_index
+    if _pinecone_index is None:
+        from pinecone import Pinecone
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        _pinecone_index = pc.Index(PINECONE_INDEX)
+    return _pinecone_index
+
+
+def search(query, k=5, file_filter=None, type_filter=None):
+    from embedder import embed_query
+
+    query_vec = embed_query(query)[0].tolist()
+    index     = get_pinecone_index()
+
+    # Fetch more than k so we can filter
+    fetch_k  = max(k * 4, 30)
+    response = index.query(
+        vector=query_vec,
+        top_k=fetch_k,
+        include_metadata=True,
+    )
+
+    results = []
+    for match in response["matches"]:
+        meta = match["metadata"]
+
+        if file_filter and file_filter.lower() not in meta.get("file", "").lower():
+            continue
+        if type_filter and meta.get("type") != type_filter:
+            continue
+
+        results.append({
+            "file":       meta.get("file", ""),
+            "page":       meta.get("page", ""),
+            "type":       meta.get("type", "text"),
+            "content":    meta.get("content", ""),
+            "source":     meta.get("source", ""),
+            "image_path": meta.get("image_path", ""),
+            "score":      match["score"],
+        })
+
+        if len(results) >= k:
+            break
+
+    return results
 
 
 def build_context(results, max_chars=4000):
     context = ""
-
     for item in results:
         chunk = f"[{item.get('file', 'Unknown')} | Page {item.get('page')}]\n{item.get('content', '')}\n\n"
         if len(context) + len(chunk) > max_chars:
             break
         context += chunk
-
     return context.strip()
 
 
-def ask_ollama(prompt, model="llama3", timeout=60):
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
-        timeout=timeout,
+# ---------------------------------------------------------------------------
+# Groq LLM
+# ---------------------------------------------------------------------------
+
+def ask_groq(prompt):
+    from groq import Groq
+    client   = Groq(api_key=GROQ_API_KEY)
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1000,
     )
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get("response", "").strip()
+    return response.choices[0].message.content.strip()
 
 
-def _fallback_answer(query, results):
+def _fallback_answer(results):
     if not results:
-        return "I could not find any matching indexed text. Build the dataset first, then try again."
+        return "I could not find any matching indexed text."
 
     snippets = []
     for item in results[:3]:
         snippets.append(
-            f"- {item.get('file', 'Unknown')} page {item.get('page', '?')}: {item.get('content', '')[:280].strip()}"
+            f"- {item.get('file', 'Unknown')} page {item.get('page', '?')}: "
+            f"{item.get('content', '')[:280].strip()}"
         )
-
-    joined = "\n".join(snippets)
     return (
-        "Ollama is unavailable, so here are the closest matching passages for your question:\n\n"
-        f"{joined}"
+        "The LLM is unavailable. Here are the closest matching passages:\n\n"
+        + "\n".join(snippets)
     )
 
 
-def answer_question(query):
-    results = search(query, k=8)
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def answer_question(query, history=None):
+    history = history or []
+
+    search_query = (
+        build_enriched_query(query, history)
+        if is_followup(query, history)
+        else query
+    )
+
+    initial_results = search(search_query, k=20)   # high recall
+    reranked = rerank(initial_results, search_query)
+    results = reranked[:8]                         # high precision
     context = build_context(results)
 
     if not context:
         return "I could not find that in the indexed documents.", results
 
-    prompt = f"""
-You are a factual assistant. Answer ONLY using the provided context.
+    conversation_snippet = ""
+    if history and is_followup(query, history):
+        recent = [m for m in history if m["role"] in ("user", "assistant")][-4:]
+        if recent:
+            conversation_snippet = "Recent conversation:\n"
+            for m in recent:
+                role_label = "User" if m["role"] == "user" else "Assistant"
+                conversation_snippet += f"{role_label}: {m['content'][:400]}\n"
+            conversation_snippet += "\n"
 
-If the answer is not in the context, say:
-"I could not find that in the documents."
+    prompt = f"""You are a factual assistant analyzing the Epstein files.
 
-Context:
+Use ONLY the provided document context to answer.
+
+Rules:
+- If the exact answer is stated → return it clearly
+- If partial evidence exists → infer cautiously and explain
+- Do NOT say "not found" if there is relevant evidence
+- Only say "not found" if the context is clearly unrelated
+- If the question is a follow-up, use the conversation history to understand the topic
+- Always cite the file name and page number when referencing evidence
+
+{conversation_snippet}Document Context:
 {context}
 
-Question: {query}
+Current Question: {query}
 
-Answer:
-"""
+Answer:"""
 
     try:
-        answer = ask_ollama(prompt)
+        answer = ask_groq(prompt)
         if not answer:
-            answer = _fallback_answer(query, results)
-    except Exception:
-        answer = _fallback_answer(query, results)
+            answer = _fallback_answer(results)
+    except Exception as e:
+        print(f"[ERROR] Groq failed: {e}")
+        answer = _fallback_answer(results)
 
     return answer, results
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def chat():
     print("\nEpstein Files AI (type 'exit' to quit)\n")
+    history = []
 
     while True:
         query = input("Ask: ").strip()
         if query.lower() in {"exit", "quit"}:
             break
 
-        answer, sources = answer_question(query)
+        history.append({"role": "user", "content": query})
+        answer, sources = answer_question(query, history=history)
+        history.append({"role": "assistant", "content": answer})
+
         print("\nAnswer:\n")
         print(answer)
         print("\nSources:\n")

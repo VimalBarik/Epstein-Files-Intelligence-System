@@ -11,3 +11,5 @@ numpy
 requests
 streamlit
 tqdm
+pinecone
+python-dotenv

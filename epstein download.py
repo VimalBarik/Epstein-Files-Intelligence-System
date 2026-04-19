@@ -417,7 +417,7 @@ def main_multithreaded():
         total_files += downloads
     
     print("\n" + "="*60)
-    print(f"✅ Done! Downloaded {total_files} new files")
+    print(f" Done! Downloaded {total_files} new files")
     print(f"Total files in directory: {len(downloaded)}")
     print(f"Files saved to: {DOWNLOAD_DIR}")
     print("="*60)

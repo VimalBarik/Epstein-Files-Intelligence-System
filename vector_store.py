@@ -1,98 +1,130 @@
 import os
-import faiss
-import pickle
+import json
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
+from dotenv import load_dotenv
 
-from project_paths import CHUNKS_JSON, FAISS_DIR
+from project_paths import CHUNKS_JSON
+
+# ---------------------------------------------------------------------------
+# Pinecone setup
+# ---------------------------------------------------------------------------
+
+load_dotenv()
+
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+PINECONE_INDEX  = os.environ.get("PINECONE_INDEX", "epstein-index")
+
+CHECKPOINT_DIR   = Path("data/checkpoints")
+CHECKPOINT_EVERY = 10_000
 
 
-model = None
+def get_pinecone_index():
+    if not PINECONE_API_KEY:
+        raise RuntimeError("PINECONE_API_KEY is not set. Export a valid Pinecone API key before running.")
+    from pinecone import Pinecone
+    pc    = Pinecone(api_key=PINECONE_API_KEY)
+    index = pc.Index(PINECONE_INDEX)
+    return index
 
 
-def get_model():
-    global model
-    if model is None:
-        from sentence_transformers import SentenceTransformer
-
-        print("[INFO] Loading embedding model...")
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("[INFO] Model loaded")
-    return model
-
+# ---------------------------------------------------------------------------
+# Chunk loading
+# ---------------------------------------------------------------------------
 
 def load_chunks(path=os.fspath(CHUNKS_JSON)):
-    import json
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def create_embeddings(chunks):
-    texts = [c["content"] for c in chunks]
+# ---------------------------------------------------------------------------
+# Checkpointing (so a crash mid-way doesn't lose progress)
+# ---------------------------------------------------------------------------
 
-    print(f"[INFO] Creating embeddings for {len(texts)} chunks...")
-    embeddings = get_model().encode(
-        texts,
-        batch_size=32,
-        show_progress_bar=True,
-        convert_to_numpy=True
-    )
+def load_checkpoint():
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    meta_path = CHECKPOINT_DIR / "meta.json"
+    if not meta_path.exists():
+        return 0
 
-    return embeddings
+    with open(meta_path) as f:
+        meta = json.load(f)
 
-
-def build_faiss_index(embeddings):
-    dim = embeddings.shape[1]
-
-    index = faiss.IndexFlatL2(dim)
-
-    index.add(embeddings)
-
-    print(f"[INFO] FAISS index built with {index.ntotal} vectors")
-
-    return index
+    start = meta["next_index"]
+    print(f"[INFO] Resuming from chunk {start}")
+    return start
 
 
-def save_index(index, chunks, path=os.fspath(FAISS_DIR)):
-    os.makedirs(path, exist_ok=True)
-
-    faiss.write_index(index, os.path.join(path, "index.faiss"))
-
-    with open(os.path.join(path, "chunks.pkl"), "wb") as f:
-        pickle.dump(chunks, f)
-
-    print(f"[INFO] Index + metadata saved to {path}")
+def save_checkpoint(next_index):
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CHECKPOINT_DIR / "meta.json", "w") as f:
+        json.dump({"next_index": next_index}, f)
 
 
-def build_vector_store(
-    chunks_path=os.fspath(CHUNKS_JSON),
-    output_path=os.fspath(FAISS_DIR),
-):
-    stage_progress = tqdm(total=4, desc="Building vector store", unit="stage")
+def clear_checkpoints():
+    import shutil
+    if CHECKPOINT_DIR.exists():
+        shutil.rmtree(CHECKPOINT_DIR)
+
+
+# ---------------------------------------------------------------------------
+# Build & upload
+# ---------------------------------------------------------------------------
+
+def build_vector_store(chunks_path=os.fspath(CHUNKS_JSON)):
+    from embedder import embed_texts
 
     chunks = load_chunks(chunks_path)
-    stage_progress.set_postfix({"step": "loaded_chunks", "count": len(chunks)})
-    stage_progress.update(1)
+    print(f"[INFO] Total chunks: {len(chunks)}")
 
-    if not chunks:
-        print("[ERROR] No chunks found!")
-        stage_progress.close()
-        return
+    start_index = load_checkpoint()
+    index       = get_pinecone_index()
 
-    embeddings = create_embeddings(chunks)
-    stage_progress.set_postfix({"step": "created_embeddings", "count": len(chunks)})
-    stage_progress.update(1)
+    progress = tqdm(total=len(chunks), initial=start_index, desc="Uploading to Pinecone")
 
-    index = build_faiss_index(embeddings)
-    stage_progress.set_postfix({"step": "built_index", "vectors": index.ntotal})
-    stage_progress.update(1)
+    batch_texts  = []
+    batch_chunks = []
 
-    save_index(index, chunks, output_path)
-    stage_progress.set_postfix({"step": "saved_index"})
-    stage_progress.update(1)
-    stage_progress.close()
+    for i in range(start_index, len(chunks)):
+        chunk = chunks[i]
+        batch_texts.append(f"passage: {chunk['content']}")
+        batch_chunks.append((i, chunk))
+        progress.update(1)
 
-    print("\n✅ Vector store ready!")
+        if len(batch_texts) == CHECKPOINT_EVERY or i == len(chunks) - 1:
+            # Embed
+            embeddings = embed_texts(batch_texts, batch_size=16)
+
+            # Build Pinecone vectors
+            vectors = []
+            for (idx, c), emb in zip(batch_chunks, embeddings):
+                vectors.append({
+                    "id": str(idx),
+                    "values": emb.tolist(),
+                    "metadata": {
+                        "file":       c.get("file", ""),
+                        "page":       str(c.get("page", "")),
+                        "type":       c.get("type", "text"),
+                        "content":    c.get("content", "")[:1000],
+                        "source":     c.get("source", ""),
+                        "image_path": c.get("image_path", ""),
+                    },
+                })
+
+            # Upsert in sub-batches of 100 (Pinecone limit)
+            for j in range(0, len(vectors), 100):
+                index.upsert(vectors=vectors[j:j + 100])
+
+            save_checkpoint(i + 1)
+            print(f"[INFO] Upserted up to chunk {i + 1}")
+
+            batch_texts  = []
+            batch_chunks = []
+
+    progress.close()
+    clear_checkpoints()
+    print("\n✅ Pinecone vector store ready!")
 
 
 if __name__ == "__main__":

@@ -51,8 +51,8 @@ def chunk_text(text, max_chars=800, overlap=100):
 def create_chunks(
     input_path=os.fspath(FINAL_DATA_JSON),
     output_path=os.fspath(CHUNKS_JSON),
-    max_chars=800,
-    overlap=100
+    max_chars=1200,
+    overlap=200
 ):
     with open(input_path, "r", encoding="utf-8") as f:
         data = json.load(f)
