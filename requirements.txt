@@ -1,15 +1,29 @@
-pymupdf
-pdfplumber
-pdf2image
-pillow
-pytesseract
+# Core app
+streamlit
+
+# LLM & vector DB
+groq
+pinecone
+
+# Embeddings
 sentence-transformers
 torch
+
+# PDF processing
+pdfplumber
+pymupdf
+pdf2image
+pytesseract
+Pillow
+
+# OCR / image captioning
 transformers
-faiss-cpu
-numpy
-requests
-streamlit
-tqdm
-pinecone
+
+# Web scraping (epstein_download.py)
+selenium
+webdriver-manager
+
+# Utilities
 python-dotenv
+numpy
+tqdm
