@@ -2,6 +2,9 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+for key, value in st.secrets.items():
+    os.environ[key] = value
+    
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -225,10 +228,6 @@ section.main > div { padding-bottom: 110px !important; }
 """, unsafe_allow_html=True)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def redaction_level(text):
     count = text.count("[REDACTED]") + text.count("█") + text.count("XXXX")
     if count >= 4:
@@ -274,13 +273,7 @@ def get_suggestions(query, answer):
     return ["What documents relate to this?", "Who else is mentioned?", "Show me the timeline for this."]
 
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
 
-# FIX: Read pending_file_filter BEFORE rendering the widget so it actually
-# takes effect. Previously it was read after widget creation and silently
-# discarded because Streamlit had already captured the widget value.
 _pending_file_filter = st.session_state.pop("pending_file_filter", None)
 
 with st.sidebar:
@@ -326,8 +319,7 @@ with st.sidebar:
     else:
         top_k = 12
 
-    # FIX: supply the pending value as the widget's default so it renders
-    # with the correct pre-filled text rather than being ignored.
+    
     file_filter = st.text_input(
         "File name",
         value=_pending_file_filter or "",
@@ -336,12 +328,10 @@ with st.sidebar:
     type_filter = st.selectbox("Type", ["all", "text", "image_description"])
 
 
-# ---------------------------------------------------------------------------
-# Chat
-# ---------------------------------------------------------------------------
+
 
 if view == "Chat":
-    # Page-level title — sits at top above everything, aligned with Deploy button
+    
     st.markdown(
         '<h1 style="font-family:Georgia,serif;font-size:32px;color:#2C3E50;'
         'font-weight:bold;margin:0 0 24px 0;padding:0;">Epstein Archive</h1>',
@@ -379,12 +369,7 @@ if view == "Chat":
                                 st.session_state.pending_prompt = chip
                                 st.rerun()
 
-        # FIX: consume pending_prompt BEFORE chat_input so that Streamlit's
-        # widget system sees the resolved prompt value on the same render pass.
-        # Previously, pending_prompt was popped after chat_input, meaning the
-        # first rerun would render chat_input with an empty value and then
-        # overwrite `prompt` — but only if the user hadn't typed anything,
-        # creating a subtle race. Popping first guarantees correct ordering.
+        
         prompt = st.session_state.pop("pending_prompt", None)
         typed  = st.chat_input("Enter your inquiry...")
         if typed:
@@ -400,16 +385,14 @@ if view == "Chat":
 
             with st.chat_message("assistant"):
                 with st.spinner("Searching archive..."):
-                    # Single search: answer_question does its own reranked search
-                    # internally. We also run filtered_search with the sidebar
-                    # filters so the Evidence Sources panel respects them.
+                   
                     answer, answer_results = answer_question(prompt, history=history_so_far)
                     results = filtered_search(
                         prompt,
                         k=top_k,
                         file_filter=file_filter or None,
                         type_filter=None if type_filter == "all" else type_filter,
-                    ) or answer_results  # fall back to answer_results if filter returns nothing
+                    ) or answer_results  
 
                 st.markdown(answer)
 
@@ -439,7 +422,7 @@ if view == "Chat":
                 "chips":   chips,
             })
 
-    # Right panel
+    
     with col2:
         st.markdown('<div class="section-header">Evidence Sources</div>', unsafe_allow_html=True)
         results = st.session_state.get("last_results", [])
@@ -470,12 +453,7 @@ if view == "Chat":
                 unsafe_allow_html=True,
             )
 
-    # Native st.chat_input renders below — styled via CSS above
-
-
-# ---------------------------------------------------------------------------
-# Entity Graph
-# ---------------------------------------------------------------------------
+    
 
 elif view == "Entity Graph":
     _remove_fixed_chat_bar()
@@ -511,9 +489,6 @@ elif view == "Entity Graph":
                 st.info("No entity found. Try a different spelling.")
 
 
-# ---------------------------------------------------------------------------
-# Timeline
-# ---------------------------------------------------------------------------
 
 elif view == "Timeline":
     _remove_fixed_chat_bar()
@@ -556,9 +531,7 @@ elif view == "Timeline":
                 count += 1
 
 
-# ---------------------------------------------------------------------------
-# Heatmap
-# ---------------------------------------------------------------------------
+
 
 elif view == "Heatmap":
     _remove_fixed_chat_bar()

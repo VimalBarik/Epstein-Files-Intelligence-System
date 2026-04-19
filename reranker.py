@@ -17,7 +17,7 @@ def keyword_score(query_tokens, doc_tokens):
 
 
 def entity_boost(query, text):
-    # simple heuristic: boost if proper nouns match (names, places)
+    
     query_words = set(query.split())
     text_words  = set(text.split())
 
@@ -34,16 +34,16 @@ def rerank(results, query):
 
         doc_tokens = tokenize(text)
 
-        # scores
+        
         kw_score = keyword_score(query_tokens, doc_tokens)
         ent_score = entity_boost(query, text)
         vec_score = r.get("score", 0)
 
-        # weighted combination
+        
         final_score = (
-            0.5 * vec_score +   # Pinecone similarity
-            0.3 * kw_score +    # keyword overlap
-            0.2 * ent_score     # entity match
+            0.5 * vec_score +   
+            0.3 * kw_score +    
+            0.2 * ent_score     
         )
 
         r["rerank_score"] = final_score

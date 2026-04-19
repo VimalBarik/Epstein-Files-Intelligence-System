@@ -7,9 +7,7 @@ from dotenv import load_dotenv
 
 from project_paths import CHUNKS_JSON
 
-# ---------------------------------------------------------------------------
-# Pinecone setup
-# ---------------------------------------------------------------------------
+
 
 load_dotenv()
 
@@ -29,18 +27,14 @@ def get_pinecone_index():
     return index
 
 
-# ---------------------------------------------------------------------------
-# Chunk loading
-# ---------------------------------------------------------------------------
+
 
 def load_chunks(path=os.fspath(CHUNKS_JSON)):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-# ---------------------------------------------------------------------------
-# Checkpointing (so a crash mid-way doesn't lose progress)
-# ---------------------------------------------------------------------------
+
 
 def load_checkpoint():
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
@@ -68,9 +62,7 @@ def clear_checkpoints():
         shutil.rmtree(CHECKPOINT_DIR)
 
 
-# ---------------------------------------------------------------------------
-# Build & upload
-# ---------------------------------------------------------------------------
+
 
 def build_vector_store(chunks_path=os.fspath(CHUNKS_JSON)):
     from embedder import embed_texts
@@ -93,10 +85,10 @@ def build_vector_store(chunks_path=os.fspath(CHUNKS_JSON)):
         progress.update(1)
 
         if len(batch_texts) == CHECKPOINT_EVERY or i == len(chunks) - 1:
-            # Embed
+            
             embeddings = embed_texts(batch_texts, batch_size=16)
 
-            # Build Pinecone vectors
+            
             vectors = []
             for (idx, c), emb in zip(batch_chunks, embeddings):
                 vectors.append({
@@ -112,7 +104,7 @@ def build_vector_store(chunks_path=os.fspath(CHUNKS_JSON)):
                     },
                 })
 
-            # Upsert in sub-batches of 100 (Pinecone limit)
+            
             for j in range(0, len(vectors), 100):
                 index.upsert(vectors=vectors[j:j + 100])
 
@@ -124,7 +116,7 @@ def build_vector_store(chunks_path=os.fspath(CHUNKS_JSON)):
 
     progress.close()
     clear_checkpoints()
-    print("\n✅ Pinecone vector store ready!")
+    print("\n Pinecone vector store ready!")
 
 
 if __name__ == "__main__":

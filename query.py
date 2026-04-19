@@ -4,18 +4,14 @@ from dotenv import load_dotenv
 load_dotenv()
 from reranker import rerank
 
-# ---------------------------------------------------------------------------
-# API keys — set these in your .env file or Streamlit secrets
-# ---------------------------------------------------------------------------
+
 
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 PINECONE_INDEX   = os.environ.get("PINECONE_INDEX",  "epstein-index")
 
 
-# ---------------------------------------------------------------------------
-# Follow-up detection
-# ---------------------------------------------------------------------------
+
 
 _FOLLOWUP_PATTERNS = re.compile(
     r"^\s*("
@@ -67,9 +63,7 @@ def build_enriched_query(current_query: str, history: list) -> str:
     return f"{topic_terms} {current_query}".strip()
 
 
-# ---------------------------------------------------------------------------
-# Pinecone search
-# ---------------------------------------------------------------------------
+
 
 _pinecone_index = None
 
@@ -89,7 +83,7 @@ def search(query, k=5, file_filter=None, type_filter=None):
     query_vec = embed_query(query)[0].tolist()
     index     = get_pinecone_index()
 
-    # Fetch more than k so we can filter
+    
     fetch_k  = max(k * 4, 30)
     response = index.query(
         vector=query_vec,
@@ -132,9 +126,7 @@ def build_context(results, max_chars=4000):
     return context.strip()
 
 
-# ---------------------------------------------------------------------------
-# Groq LLM
-# ---------------------------------------------------------------------------
+
 
 def ask_groq(prompt):
     from groq import Groq
@@ -163,9 +155,7 @@ def _fallback_answer(results):
     )
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
+
 
 def answer_question(query, history=None):
     history = history or []
@@ -224,9 +214,7 @@ Answer:"""
     return answer, results
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+
 
 def chat():
     print("\nEpstein Files AI (type 'exit' to quit)\n")
