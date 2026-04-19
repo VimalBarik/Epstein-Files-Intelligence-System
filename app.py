@@ -1,5 +1,8 @@
 import os
 from dotenv import load_dotenv
+import datetime
+from collections import Counter
+import streamlit as st
 load_dotenv()
 
 for key, value in st.secrets.items():
@@ -9,9 +12,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import datetime
-from collections import Counter
-import streamlit as st
+
 
 from enhanced_query import filtered_search
 from query import answer_question, search
